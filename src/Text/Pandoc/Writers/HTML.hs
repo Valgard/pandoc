@@ -146,6 +146,7 @@ needsVariationSelector '↔' = True
 needsVariationSelector _   = False
 
 -- | Hard linebreak.
+-- Controls if newlines are added after elements
 nl :: Html
 nl = preEscapedString "\n"
 
@@ -848,66 +849,83 @@ blockToHtmlInner opts (Div (ident, "section":dclasses, dkvs)
 blockToHtmlInner opts (Div attr@(ident, classes, kvs') bs) = do
   html5 <- gets stHtml5
   slideVariant <- gets stSlideVariant
-  let isCslBibBody = ident == "refs" || "csl-bib-body" `elem` classes
-  when isCslBibBody $ modify $ \st -> st{ stCsl = True
-                                        , stCslEntrySpacing =
-                                           lookup "entry-spacing" kvs' >>=
-                                           safeRead }
-  let isCslBibEntry = "csl-entry" `elem` classes
-  let kvs = [(k,v) | (k,v) <- kvs'
-                   , k /= "width" || "column" `notElem` classes] ++
-            [("style", "width:" <> w <> ";") | "column" `elem` classes
-                                             , ("width", w) <- kvs'] ++
-            [("role", "list") | isCslBibBody && html5] ++
-            [("role", "listitem") | isCslBibEntry && html5]
-  let speakerNotes = "notes" `elem` classes
-  -- we don't want incremental output inside speaker notes, see #1394
-  let (opts', isIncrDiv) =
-        if | speakerNotes ->
-             (opts{ writerIncremental = False }, False)
-           | "incremental" `elem` classes ->
-             (opts{ writerIncremental = True }, True)
-           | "nonincremental" `elem` classes ->
-             (opts{ writerIncremental = False }, True)
-           | otherwise ->
-             (opts, False)
-      -- we remove "incremental" and "nonincremental" if we're in a
-      -- slide presentation format.
-      classes' = case slideVariant of
-        NoSlides -> classes
-        _ -> filter (\k -> k /= "incremental" && k /= "nonincremental") classes
-  let paraToPlain (Para ils) = Plain ils
-      paraToPlain x          = x
-  let bs' = if "csl-entry" `elem` classes'
-               then walk paraToPlain bs
-               else bs
-  contents <- if "columns" `elem` classes'
-                 then -- we don't use blockListToHtml because it inserts
-                      -- a newline between the column divs, which throws
-                      -- off widths! see #4028
-                      mconcat <$> mapM (blockToHtml opts) bs'
-                 else blockListToHtml opts' bs'
-  let contents' = nl >> contents >> nl
-  let (divtag, classes'') = if html5 && "section" `elem` classes'
-                            then (H5.section, filter (/= "section") classes')
-                            else (H.div, classes')
-  if | isIncrDiv && (ident, classes'', kvs) == nullAttr ->
-         -- Unwrap divs that only have (non)increment information
-         pure contents
-     | speakerNotes ->
-         case slideVariant of
-              RevealJsSlides -> addAttrs opts' attr $
-                          H5.aside contents'
-              DZSlides       -> do
-                t <- addAttrs opts' attr $
-                            H5.div contents'
-                return $ t ! A5.role "note"
-              NoSlides       -> addAttrs opts' attr $
-                          H.div contents'
-              _              -> return mempty
-     | otherwise ->
-          addAttrs opts (ident, classes'', kvs) $
-              divtag contents'
+  
+  let isWrapper = lookup "wrapper" kvs' == Just "1"
+  let kvs_without_wrapper = filter (\(k,_) -> k /= "wrapper") kvs'
+  
+  -- For paragraph wrappers with a single paragraph, apply the attributes to the paragraph
+  if isWrapper && length bs == 1
+     then case head bs of
+            Para ils -> do
+              contents <- inlineListToHtml opts ils
+              case contents of
+                Empty _ | not (isEnabled Ext_empty_paragraphs opts) -> return mempty
+                _ -> addAttrs opts (ident, classes, kvs_without_wrapper) $ H.p contents
+            _ -> continueWithNormalDiv html5 slideVariant
+     else continueWithNormalDiv html5 slideVariant
+  
+  where
+    continueWithNormalDiv html5 slideVariant = do
+      let isCslBibBody = ident == "refs" || "csl-bib-body" `elem` classes
+      when isCslBibBody $ modify $ \st -> st{ stCsl = True
+                                            , stCslEntrySpacing =
+                                               lookup "entry-spacing" kvs' >>=
+                                               safeRead }
+      let isCslBibEntry = "csl-entry" `elem` classes
+      let kvs = [(k,v) | (k,v) <- kvs'
+                       , k /= "width" || "column" `notElem` classes] ++
+                [("style", "width:" <> w <> ";") | "column" `elem` classes
+                                                 , ("width", w) <- kvs'] ++
+                [("role", "list") | isCslBibBody && html5] ++
+                [("role", "listitem") | isCslBibEntry && html5]
+      let speakerNotes = "notes" `elem` classes
+      -- we don't want incremental output inside speaker notes, see #1394
+      let (opts', isIncrDiv) =
+            if | speakerNotes ->
+                 (opts{ writerIncremental = False }, False)
+               | "incremental" `elem` classes ->
+                 (opts{ writerIncremental = True }, True)
+               | "nonincremental" `elem` classes ->
+                 (opts{ writerIncremental = False }, True)
+               | otherwise ->
+                 (opts, False)
+          -- we remove "incremental" and "nonincremental" if we're in a
+          -- slide presentation format.
+          classes' = case slideVariant of
+            NoSlides -> classes
+            _ -> filter (\k -> k /= "incremental" && k /= "nonincremental") classes
+      let paraToPlain (Para ils) = Plain ils
+          paraToPlain x          = x
+      let bs' = if "csl-entry" `elem` classes'
+                   then walk paraToPlain bs
+                   else bs
+      contents <- if "columns" `elem` classes'
+                     then -- we don't use blockListToHtml because it inserts
+                          -- a newline between the column divs, which throws
+                          -- off widths! see #4028
+                          mconcat <$> mapM (blockToHtml opts) bs'
+                     else blockListToHtml opts' bs'
+      let contents' = nl >> contents >> nl
+      let (divtag, classes'') = if html5 && "section" `elem` classes'
+                                then (H5.section, filter (/= "section") classes')
+                                else (H.div, classes')
+      if | isIncrDiv && (ident, classes'', kvs) == nullAttr ->
+             -- Unwrap divs that only have (non)increment information
+             pure contents
+         | speakerNotes ->
+             case slideVariant of
+                  RevealJsSlides -> addAttrs opts' attr $
+                              H5.aside contents'
+                  DZSlides       -> do
+                    t <- addAttrs opts' attr $
+                                H5.div contents'
+                    return $ t ! A5.role "note"
+                  NoSlides       -> addAttrs opts' attr $
+                              H.div contents'
+                  _              -> return mempty
+         | otherwise ->
+              addAttrs opts (ident, classes'', kvs) $
+                  divtag contents'
 blockToHtmlInner opts (RawBlock f str) = do
   ishtml <- isRawHtml f
   if ishtml

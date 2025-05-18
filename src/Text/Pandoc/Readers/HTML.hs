@@ -625,11 +625,17 @@ pPlain = do
 
 pPara :: PandocMonad m => TagParser m Blocks
 pPara = do
+  TagOpen _ attr' <- lookAhead $ pSatisfy $ tagOpen (=="p") (const True)
+  let (ident, classes, kvs) = toAttr attr'
   contents <- trimInlines <$> pInTags "p" inline
   (do guardDisabled Ext_empty_paragraphs
       guard (null contents)
       return mempty)
-    <|> return (B.para contents)
+    <|> if (ident, classes, kvs) == nullAttr
+          -- If there are no attributes, just return a normal paragraph
+          then return (B.para contents)
+          -- Otherwise wrap it in a Div with wrapper="1" attribute and original attributes
+          else return (B.divWith (ident, classes, ("wrapper", "1") : kvs) (B.para contents))
 
 pFigure :: PandocMonad m => TagParser m Blocks
 pFigure = do
